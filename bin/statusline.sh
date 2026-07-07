@@ -124,11 +124,18 @@ else
     pct_used=0
 fi
 
-effort="default"
-settings_path="$HOME/.claude/settings.json"
-if [ -f "$settings_path" ]; then
-    effort=$(jq -r '.effortLevel // "default"' "$settings_path" 2>/dev/null)
+# Prefer the live session effort from stdin (.effort.level) so per-session /effort
+# and --effort changes (including session-only `max`, which is never persisted to
+# settings.json) are reflected. Fall back to the persisted user default when the
+# current model doesn't report an effort level.
+effort=$(echo "$input" | jq -r '.effort.level // empty')
+if [ -z "$effort" ]; then
+    settings_path="$HOME/.claude/settings.json"
+    if [ -f "$settings_path" ]; then
+        effort=$(jq -r '.effortLevel // "default"' "$settings_path" 2>/dev/null)
+    fi
 fi
+[ -z "$effort" ] && effort="default"
 
 # ── LINE 1: Model │ Context % │ Directory (branch) │ Session │ Effort ──
 pct_color=$(color_for_pct "$pct_used")
@@ -182,6 +189,8 @@ if [ -n "$session_duration" ]; then
 fi
 line1+="${sep}"
 case "$effort" in
+    max)    line1+="${magenta}◉ ${effort}${reset}" ;;
+    xhigh)  line1+="${magenta}● ${effort}${reset}" ;;
     high)   line1+="${magenta}● ${effort}${reset}" ;;
     medium) line1+="${dim}◑ ${effort}${reset}" ;;
     low)    line1+="${dim}◔ ${effort}${reset}" ;;
