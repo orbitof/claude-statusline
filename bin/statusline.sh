@@ -137,7 +137,7 @@ if [ -z "$effort" ]; then
 fi
 [ -z "$effort" ] && effort="default"
 
-# ── LINE 1: Model │ Context % │ Directory (branch) │ Session │ Effort ──
+# ── LINE 1: Model │ Context % │ Directory (branch) │ Session │ Cost │ Effort ──
 pct_color=$(color_for_pct "$pct_used")
 cwd=$(echo "$input" | jq -r '.cwd // ""')
 [ -z "$cwd" ] || [ "$cwd" = "null" ] && cwd=$(pwd)
@@ -169,6 +169,13 @@ if [ -n "$session_start" ] && [ "$session_start" != "null" ]; then
     fi
 fi
 
+# Session cost (USD) from stdin — accumulates over the current session.
+session_cost=$(echo "$input" | jq -r '.cost.total_cost_usd // empty')
+cost_fmt=""
+if [ -n "$session_cost" ] && [ "$session_cost" != "null" ]; then
+    cost_fmt=$(awk "BEGIN {printf \"%.2f\", $session_cost}")
+fi
+
 skip_perms=""
 parent_cmd=$(ps -o args= -p "$PPID" 2>/dev/null)
 if [[ "$parent_cmd" == *"--dangerously-skip-permissions"* ]]; then
@@ -186,6 +193,10 @@ fi
 if [ -n "$session_duration" ]; then
     line1+="${sep}"
     line1+="${dim}⏱ ${reset}${white}${session_duration}${reset}"
+fi
+if [ -n "$cost_fmt" ]; then
+    line1+="${sep}"
+    line1+="${green}\$${cost_fmt}${reset}"
 fi
 line1+="${sep}"
 case "$effort" in
