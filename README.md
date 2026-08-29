@@ -5,12 +5,20 @@ Configure your Claude Code statusline to show limits, directory and git info
 ![demo](./.github/demo.png)
 
 > **Personal fork** of [nilbuild/claude-statusline](https://github.com/nilbuild/claude-statusline),
-> based on upstream `v1.0.6` with two additions:
+> based on upstream `v1.0.6` with three additions:
 >
 > - **Session cost** — a `$x.xx` segment on line 1, read from `cost.total_cost_usd`.
 > - **Live session effort** — reads `effort.level` from the statusline payload, so
 >   per-session `/effort` / `--effort` (including the session-only `max` level, which
 >   is never written to `settings.json`) is reflected, not just the persisted default.
+> - **GLM (Z.ai) backend support** — when Claude Code runs against Z.ai's
+>   Anthropic-compatible endpoint (GLM Coding Plan, detected via the
+>   `ANTHROPIC_BASE_URL` host being `z.ai` or a subdomain), the `current` /
+>   `weekly` quota lines are read from Z.ai's monitor API instead of
+>   Anthropic's, showing credit usage and reset times. The synthetic USD cost
+>   estimate and the Anthropic-only `extra` line are hidden in that mode.
+>   Requires `ANTHROPIC_AUTH_TOKEN` (or `ANTHROPIC_API_KEY`) in the
+>   environment, which any Z.ai-backed session already sets.
 >
 > This fork is **not published to npm**. Install it from source (below). The upstream
 > `npx` command installs the original version *without* these changes.

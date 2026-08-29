@@ -107,6 +107,35 @@ iso_to_epoch() {
     return 1
 }
 
+format_credits() {
+    # Humanize a credit count: 416 -> "416", 12000 -> "12k", 29561 -> "29.6k"
+    local v=$1
+    if [ "$v" -ge 1000000 ]; then
+        awk "BEGIN {printf \"%.1fm\", $v/1000000}" | sed 's/\.0m$/m/'
+    elif [ "$v" -ge 1000 ]; then
+        awk "BEGIN {printf \"%.1fk\", $v/1000}" | sed 's/\.0k$/k/'
+    else
+        printf "%s" "$v"
+    fi
+}
+
+# ── Backend detection ───────────────────────────────────
+# A session pointed at Z.ai's Anthropic-compatible endpoint (GLM Coding Plan)
+# inherits ANTHROPIC_BASE_URL from the claude process, and that URL is the only
+# portable signal for the backend. Match on the host (z.ai or a subdomain), not
+# a substring of the whole URL: in GLM mode the env token is sent to api.z.ai,
+# so a URL that merely contains "z.ai" elsewhere must never enable it. An
+# unparseable URL matches nothing. In GLM mode the rate-limit lines come from
+# Z.ai's monitor API and the Anthropic OAuth fallback is skipped entirely —
+# otherwise it would display the wrong vendor's quotas.
+base_host=$(printf '%s' "${ANTHROPIC_BASE_URL:-}" \
+    | sed -E 's#^[a-zA-Z][a-zA-Z0-9+.-]*://##; s#^[^/@]+@##; s#[/?].*##; s#:[0-9]+$##' \
+    | tr '[:upper:]' '[:lower:]')
+glm_mode=false
+case "$base_host" in
+    z.ai|*.z.ai) glm_mode=true ;;
+esac
+
 # ── Extract JSON data ───────────────────────────────────
 model_name=$(echo "$input" | jq -r '.model.display_name // "Claude"')
 
@@ -170,7 +199,13 @@ if [ -n "$session_start" ] && [ "$session_start" != "null" ]; then
 fi
 
 # Session cost (USD) from stdin — accumulates over the current session.
-session_cost=$(echo "$input" | jq -r '.cost.total_cost_usd // empty')
+# Not shown in GLM mode: there the figure is a client-side estimate computed
+# against Anthropic pricing, which says nothing about a subscription plan's
+# actual quota consumption.
+session_cost=""
+if ! $glm_mode; then
+    session_cost=$(echo "$input" | jq -r '.cost.total_cost_usd // empty')
+fi
 cost_fmt=""
 if [ -n "$session_cost" ] && [ "$session_cost" != "null" ]; then
     cost_fmt=$(awk "BEGIN {printf \"%.2f\", $session_cost}")
@@ -214,14 +249,18 @@ five_hour_pct=""
 five_hour_reset_epoch=""
 seven_day_pct=""
 seven_day_reset_epoch=""
+five_hour_credits=""
+seven_day_credits=""
 
-stdin_five_pct=$(echo "$input" | jq -r '.rate_limits.five_hour.used_percentage // empty')
-if [ -n "$stdin_five_pct" ]; then
-    has_stdin_rates=true
-    five_hour_pct=$(printf "%.0f" "$stdin_five_pct")
-    five_hour_reset_epoch=$(echo "$input" | jq -r '.rate_limits.five_hour.resets_at // empty')
-    seven_day_pct=$(echo "$input" | jq -r '.rate_limits.seven_day.used_percentage // empty' | awk '{printf "%.0f", $1}')
-    seven_day_reset_epoch=$(echo "$input" | jq -r '.rate_limits.seven_day.resets_at // empty')
+if ! $glm_mode; then
+    stdin_five_pct=$(echo "$input" | jq -r '.rate_limits.five_hour.used_percentage // empty')
+    if [ -n "$stdin_five_pct" ]; then
+        has_stdin_rates=true
+        five_hour_pct=$(printf "%.0f" "$stdin_five_pct")
+        five_hour_reset_epoch=$(echo "$input" | jq -r '.rate_limits.five_hour.resets_at // empty')
+        seven_day_pct=$(echo "$input" | jq -r '.rate_limits.seven_day.used_percentage // empty' | awk '{printf "%.0f", $1}')
+        seven_day_reset_epoch=$(echo "$input" | jq -r '.rate_limits.seven_day.resets_at // empty')
+    fi
 fi
 
 # ── Fallback: API call (cached) ────────────────────────
@@ -232,7 +271,96 @@ mkdir -p /tmp/claude
 usage_data=""
 extra_enabled="false"
 
-if ! $has_stdin_rates; then
+if $glm_mode; then
+    # ── GLM (Z.ai Coding Plan): monitor API (cached) ──
+    # Same env token the session itself uses. Windows are identified by their
+    # unit/number pair (unit=3/number=5 → 5-hour, unit=6/number=1 → weekly;
+    # observed on CREDIT_LIMIT responses), not by reset-time ordering — near
+    # the weekly reset the two orderings swap. An unrecognized response shape
+    # omits the quota lines rather than guessing a mapping.
+    zai_cache="/tmp/claude/statusline-zai-cache.json"
+    zai_cache_max_age=60
+    zai_cache_max_stale=600
+    zai_data=""
+
+    if [ -f "$zai_cache" ]; then
+        zai_mtime=$(stat -c %Y "$zai_cache" 2>/dev/null || stat -f %m "$zai_cache" 2>/dev/null)
+        zai_age=$(( $(date +%s) - zai_mtime ))
+        if [ "$zai_age" -lt "$zai_cache_max_age" ]; then
+            zai_data=$(cat "$zai_cache" 2>/dev/null)
+        fi
+    fi
+
+    if [ -z "$zai_data" ]; then
+        zai_token="${ANTHROPIC_AUTH_TOKEN:-${ANTHROPIC_API_KEY:-}}"
+        if [ -n "$zai_token" ] && [ "$zai_token" != "null" ]; then
+            response=$(curl -s --max-time 5 \
+                -H "Authorization: Bearer $zai_token" \
+                "https://api.z.ai/api/monitor/usage/quota/limit" 2>/dev/null)
+            # Cache only a structurally valid response — one containing at
+            # least one renderable entry (a KNOWN window with renderable
+            # fields) — so an endpoint shape change can never overwrite the
+            # last good cache. Rendering feeds usage/currentValue/nextResetTime
+            # into bash integer arithmetic, so those must be integers; and
+            # percentage must be a number or absent/null (`// ` would also
+            # rewrite false, so test it explicitly).
+            if [ -n "$response" ] && echo "$response" | jq -e '
+                def oknum: type == "number" and floor == .;
+                def rbl($u; $n): .unit == $u and .number == $n
+                    and (.usage | oknum) and (.currentValue | oknum) and (.nextResetTime | oknum)
+                    and (.percentage | (. == null or type == "number"));
+                (.data.limits | type) == "array"
+                and ([.data.limits[] | select(rbl(3; 5) or rbl(6; 1))] | length) > 0
+            ' >/dev/null 2>&1; then
+                zai_data="$response"
+                # Atomic replace, so concurrent statusline instances never
+                # read a partially written cache.
+                zai_tmp="$(mktemp "${zai_cache}.XXXXXX")" \
+                    && printf '%s' "$response" > "$zai_tmp" \
+                    && mv -f "$zai_tmp" "$zai_cache" \
+                    || rm -f "$zai_tmp"
+            fi
+        fi
+        # Refresh failed: fall back to the stale cache for a bounded window
+        # only; past it the quota lines are omitted rather than displayed as
+        # if current.
+        if [ -z "$zai_data" ] && [ -f "$zai_cache" ]; then
+            zai_mtime=$(stat -c %Y "$zai_cache" 2>/dev/null || stat -f %m "$zai_cache" 2>/dev/null)
+            zai_age=$(( $(date +%s) - zai_mtime ))
+            [ "$zai_age" -lt "$zai_cache_max_stale" ] && zai_data=$(cat "$zai_cache" 2>/dev/null)
+        fi
+    fi
+
+    if [ -n "$zai_data" ] && echo "$zai_data" | jq -e '(.data.limits | type) == "array"' >/dev/null 2>&1; then
+        # rbl($u; $n) is the renderable-entry predicate — identical to the
+        # cache-write gate, so what gets cached is exactly what can render.
+        # 5-hour window: unit=3 / number=5
+        zai_entry=$(echo "$zai_data" | jq -c '
+            def oknum: type == "number" and floor == .;
+            def rbl($u; $n): .unit == $u and .number == $n
+                and (.usage | oknum) and (.currentValue | oknum) and (.nextResetTime | oknum)
+                and (.percentage | (. == null or type == "number"));
+            .data.limits | map(select(rbl(3; 5))) | .[0] // empty' 2>/dev/null)
+        if [ -n "$zai_entry" ]; then
+            five_hour_pct=$(echo "$zai_entry" | jq -r '.percentage // (if .usage > 0 then (.currentValue / .usage * 100) else 0 end)' | awk '{printf "%.0f", $1}')
+            five_hour_reset_epoch=$(( $(echo "$zai_entry" | jq -r '.nextResetTime') / 1000 ))
+            five_hour_credits="$(format_credits "$(echo "$zai_entry" | jq -r '.currentValue')")/$(format_credits "$(echo "$zai_entry" | jq -r '.usage')")"
+        fi
+
+        # Weekly window: unit=6 / number=1
+        zai_entry=$(echo "$zai_data" | jq -c '
+            def oknum: type == "number" and floor == .;
+            def rbl($u; $n): .unit == $u and .number == $n
+                and (.usage | oknum) and (.currentValue | oknum) and (.nextResetTime | oknum)
+                and (.percentage | (. == null or type == "number"));
+            .data.limits | map(select(rbl(6; 1))) | .[0] // empty' 2>/dev/null)
+        if [ -n "$zai_entry" ]; then
+            seven_day_pct=$(echo "$zai_entry" | jq -r '.percentage // (if .usage > 0 then (.currentValue / .usage * 100) else 0 end)' | awk '{printf "%.0f", $1}')
+            seven_day_reset_epoch=$(( $(echo "$zai_entry" | jq -r '.nextResetTime') / 1000 ))
+            seven_day_credits="$(format_credits "$(echo "$zai_entry" | jq -r '.currentValue')")/$(format_credits "$(echo "$zai_entry" | jq -r '.usage')")"
+        fi
+    fi
+elif ! $has_stdin_rates; then
     needs_refresh=true
 
     if [ -f "$cache_file" ]; then
@@ -318,6 +446,7 @@ if [ -n "$five_hour_pct" ]; then
     five_hour_pct_fmt=$(printf "%3d" "$five_hour_pct")
 
     rate_lines+="${white}current${reset} ${five_hour_bar} ${five_hour_pct_color}${five_hour_pct_fmt}%${reset}"
+    [ -n "$five_hour_credits" ] && rate_lines+=" ${dim}${five_hour_credits}${reset}"
     [ -n "$five_hour_reset" ] && rate_lines+=" ${dim}⟳${reset} ${white}${five_hour_reset}${reset}"
 fi
 
@@ -329,6 +458,7 @@ if [ -n "$seven_day_pct" ]; then
 
     [ -n "$rate_lines" ] && rate_lines+="\n"
     rate_lines+="${white}weekly${reset}  ${seven_day_bar} ${seven_day_pct_color}${seven_day_pct_fmt}%${reset}"
+    [ -n "$seven_day_credits" ] && rate_lines+=" ${dim}${seven_day_credits}${reset}"
     [ -n "$seven_day_reset" ] && rate_lines+=" ${dim}⟳${reset} ${white}${seven_day_reset}${reset}"
 fi
 
