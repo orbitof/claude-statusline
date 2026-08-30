@@ -22,6 +22,10 @@ reset='\033[0m'
 
 sep=" ${dim}│${reset} "
 
+# Claude Code config location — CLAUDE_CONFIG_DIR when set (multi-profile
+# setups), ~/.claude otherwise.
+config_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+
 # ── Helpers ─────────────────────────────────────────────
 color_for_pct() {
     local pct=$1
@@ -111,11 +115,40 @@ format_credits() {
     # Humanize a credit count: 416 -> "416", 12000 -> "12k", 29561 -> "29.6k"
     local v=$1
     if [ "$v" -ge 1000000 ]; then
-        awk "BEGIN {printf \"%.1fm\", $v/1000000}" | sed 's/\.0m$/m/'
+        awk -v n="$v" 'BEGIN {printf "%.1fm", n/1000000}' | sed 's/\.0m$/m/'
     elif [ "$v" -ge 1000 ]; then
-        awk "BEGIN {printf \"%.1fk\", $v/1000}" | sed 's/\.0k$/k/'
+        awk -v n="$v" 'BEGIN {printf "%.1fk", n/1000}' | sed 's/\.0k$/k/'
     else
         printf "%s" "$v"
+    fi
+}
+
+# ── Pace projection ─────────────────────────────────────
+# Project where the window-end usage lands if the current pace holds:
+# u% consumed after e seconds of a w-second window → u * w / e. Elapsed
+# time is derived from the reset time (window start = reset − w), so any
+# window with a known reset time works, including Z.ai's — no extra data
+# source needed. Suppressed while the window is too young for a pace to
+# mean anything; an elapsed time past the window length means the reset
+# time is stale (expired cache), and the pace is dropped rather than
+# rendered from dead data.
+pace_pct() {
+    local used=$1 window_len=$2 reset_epoch=$3 min_elapsed=$4
+    [ -z "$reset_epoch" ] || [ "$reset_epoch" = "null" ] || [ "$reset_epoch" = "0" ] && return 1
+    local elapsed=$(( window_len - (reset_epoch - $(date +%s)) ))
+    [ "$elapsed" -lt "$min_elapsed" ] || [ "$elapsed" -gt "$window_len" ] && return 1
+    awk -v u="$used" -v w="$window_len" -v e="$elapsed" \
+        'BEGIN { p = u * w / e; if (p > 999) p = 999; printf "%3.0f", p }'
+}
+
+# Pace thresholds are tighter than color_for_pct: what matters is whether
+# the window ends over 100%, not gradual saturation.
+pace_color() {
+    local pct=$1
+    if [ "$pct" -ge 100 ]; then printf "$red"
+    elif [ "$pct" -ge 90 ]; then printf "$yellow"
+    elif [ "$pct" -ge 80 ]; then printf "$orange"
+    else printf "$green"
     fi
 }
 
@@ -159,7 +192,7 @@ fi
 # current model doesn't report an effort level.
 effort=$(echo "$input" | jq -r '.effort.level // empty')
 if [ -z "$effort" ]; then
-    settings_path="$HOME/.claude/settings.json"
+    settings_path="$config_dir/settings.json"
     if [ -f "$settings_path" ]; then
         effort=$(jq -r '.effortLevel // "default"' "$settings_path" 2>/dev/null)
     fi
@@ -176,25 +209,48 @@ git_branch=""
 git_dirty=""
 if git -C "$cwd" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     git_branch=$(git -C "$cwd" symbolic-ref --short HEAD 2>/dev/null)
-    if [ -n "$(git -C "$cwd" --no-optional-locks status --porcelain 2>/dev/null)" ]; then
-        git_dirty="*"
+    git_status=$(git -C "$cwd" --no-optional-locks status --porcelain 2>/dev/null)
+    if [ -n "$git_status" ]; then
+        # Count changes by kind: modified/renamed/copied/unmerged/typechange
+        # (±), added (+), deleted (−), untracked (?), compressed to
+        # "3±,1+,2-,4?" so one glance reads the working-tree state. Every
+        # porcelain state must land in a bucket — a conflicted (UU) tree
+        # must never render clean. Symbols, not letters: a count like "1M"
+        # would collide with the 1M-context badge on the same line.
+        git_dirty=$(printf '%s\n' "$git_status" | awk '
+            {
+                st = $1
+                if (st == "??") u++
+                else {
+                    if (st ~ /[MRUCT]/) m++
+                    if (st ~ /A/) a++
+                    if (st ~ /D/) d++
+                }
+            }
+            END {
+                out = ""
+                if (m > 0) out = out (out == "" ? "" : ",") m "±"
+                if (a > 0) out = out (out == "" ? "" : ",") a "+"
+                if (d > 0) out = out (out == "" ? "" : ",") d "-"
+                if (u > 0) out = out (out == "" ? "" : ",") u "?"
+                print out
+            }')
     fi
 fi
 
+# Session duration from cost.total_duration_ms — the measured wall clock.
+# Unlike .session.start_time (absent from newer payloads) it survives
+# resumes. It measures time, not money, so it stays meaningful in GLM
+# mode where the USD cost estimate is hidden.
 session_duration=""
-session_start=$(echo "$input" | jq -r '.session.start_time // empty')
-if [ -n "$session_start" ] && [ "$session_start" != "null" ]; then
-    start_epoch=$(iso_to_epoch "$session_start")
-    if [ -n "$start_epoch" ]; then
-        now_epoch=$(date +%s)
-        elapsed=$(( now_epoch - start_epoch ))
-        if [ "$elapsed" -ge 3600 ]; then
-            session_duration="$(( elapsed / 3600 ))h$(( (elapsed % 3600) / 60 ))m"
-        elif [ "$elapsed" -ge 60 ]; then
-            session_duration="$(( elapsed / 60 ))m"
-        else
-            session_duration="${elapsed}s"
-        fi
+elapsed=$(echo "$input" | jq -r '((.cost.total_duration_ms // 0) / 1000) | floor')
+if [ "$elapsed" -gt 0 ] 2>/dev/null; then
+    if [ "$elapsed" -ge 3600 ]; then
+        session_duration="$(( elapsed / 3600 ))h$(( (elapsed % 3600) / 60 ))m"
+    elif [ "$elapsed" -ge 60 ]; then
+        session_duration="$(( elapsed / 60 ))m"
+    else
+        session_duration="${elapsed}s"
     fi
 fi
 
@@ -208,7 +264,7 @@ if ! $glm_mode; then
 fi
 cost_fmt=""
 if [ -n "$session_cost" ] && [ "$session_cost" != "null" ]; then
-    cost_fmt=$(awk "BEGIN {printf \"%.2f\", $session_cost}")
+    cost_fmt=$(awk -v c="$session_cost" 'BEGIN {printf "%.2f", c}')
 fi
 
 skip_perms=""
@@ -223,7 +279,9 @@ line1+="✍️ ${pct_color}${pct_used}%${reset}"
 line1+="${sep}"
 line1+="${skip_perms}${cyan}${dirname}${reset}"
 if [ -n "$git_branch" ]; then
-    line1+=" ${green}(${git_branch}${red}${git_dirty}${green})${reset}"
+    line1+=" ${green}(${git_branch}"
+    [ -n "$git_dirty" ] && line1+="${red} ${git_dirty}"
+    line1+="${green})${reset}"
 fi
 if [ -n "$session_duration" ]; then
     line1+="${sep}"
@@ -232,6 +290,15 @@ fi
 if [ -n "$cost_fmt" ]; then
     line1+="${sep}"
     line1+="${green}\$${cost_fmt}${reset}"
+fi
+if [ "$(echo "$input" | jq -r '.fast_mode // false')" = "true" ]; then
+    line1+="${sep}${yellow}⚡ fast${reset}"
+fi
+if [ "$(echo "$input" | jq -r '.thinking.enabled == false')" = "true" ]; then
+    line1+="${sep}${dim}🧠 off${reset}"
+fi
+if [ "$(echo "$input" | jq -r '.exceeds_200k_tokens // false')" = "true" ]; then
+    line1+="${sep}${magenta}1M${reset}"
 fi
 line1+="${sep}"
 case "$effort" in
@@ -246,8 +313,10 @@ esac
 # ── Rate limits from stdin (primary) ───────────────────
 has_stdin_rates=false
 five_hour_pct=""
+five_hour_pct_raw=""
 five_hour_reset_epoch=""
 seven_day_pct=""
+seven_day_pct_raw=""
 seven_day_reset_epoch=""
 five_hour_credits=""
 seven_day_credits=""
@@ -256,17 +325,87 @@ if ! $glm_mode; then
     stdin_five_pct=$(echo "$input" | jq -r '.rate_limits.five_hour.used_percentage // empty')
     if [ -n "$stdin_five_pct" ]; then
         has_stdin_rates=true
+        # Keep the raw (fractional) percentage for pace projection; the
+        # rounded value is display-only. Rounding before extrapolation
+        # amplifies the error by the window ratio — a weekly 0.51% shown
+        # as 1% would project at twice the real pace early in the window.
+        five_hour_pct_raw="$stdin_five_pct"
         five_hour_pct=$(printf "%.0f" "$stdin_five_pct")
         five_hour_reset_epoch=$(echo "$input" | jq -r '.rate_limits.five_hour.resets_at // empty')
-        seven_day_pct=$(echo "$input" | jq -r '.rate_limits.seven_day.used_percentage // empty' | awk '{printf "%.0f", $1}')
-        seven_day_reset_epoch=$(echo "$input" | jq -r '.rate_limits.seven_day.resets_at // empty')
+        # Absent seven_day means no weekly data — omit the line entirely
+        # rather than fabricating 0%.
+        seven_day_pct_raw=$(echo "$input" | jq -r '.rate_limits.seven_day.used_percentage // empty')
+        if [ -n "$seven_day_pct_raw" ]; then
+            seven_day_pct=$(printf "%.0f" "$seven_day_pct_raw")
+            seven_day_reset_epoch=$(echo "$input" | jq -r '.rate_limits.seven_day.resets_at // empty')
+        fi
     fi
 fi
 
 # ── Fallback: API call (cached) ────────────────────────
-cache_file="/tmp/claude/statusline-usage-cache.json"
+# Cache lives under XDG_CACHE_HOME (private, 0700) rather than /tmp:
+# usage data is account-specific and /tmp files are world-readable.
+# Files are namespaced per profile AND per account (both keys derived,
+# never the secrets themselves): several Claude Code windows may run
+# different profiles or accounts at once, and a shared cache would render
+# one account's quota inside the other's statusline. The Anthropic cache
+# therefore requires a resolved token — no token means no account, hence
+# no quota to read or fetch (same rule as the Z.ai cache).
+cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/claude-statusline"
+cache_ok=false
+if mkdir -p "$cache_dir" 2>/dev/null && [ -d "$cache_dir" ] && [ -w "$cache_dir" ] \
+    && chmod 700 "$cache_dir" 2>/dev/null; then
+    cache_ok=true
+else
+    # Without a usable cache, an API fallback would hit the vendor on every
+    # refresh (up to the 5s curl timeout each render). Drop the quota lines
+    # instead — a missing segment is visible, a stalled statusline is worse.
+    echo "claude-statusline: cache dir unusable: $cache_dir" >&2
+fi
+profile_key=$(printf '%s' "$config_dir" | shasum -a 256 | cut -c1-8)
+
+# Resolve the Anthropic OAuth identity BEFORE cache lookup so the cache
+# file can be keyed by account. Order: explicit env token, then the
+# profile's own credential file (the OS keychain is a global store, and an
+# explicitly selected profile's credential must not be preempted by the
+# default account's keychain entry), then the OS credential stores.
+# Gated on cache_ok: without a usable cache dir the result is unusable
+# (no cache read, no fetch), and the credential lookups are not free —
+# secret-tool can block up to its 2s timeout on every render.
+anthropic_token=""
+if ! $glm_mode && $cache_ok; then
+    if [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
+        anthropic_token="$CLAUDE_CODE_OAUTH_TOKEN"
+    fi
+    if [ -z "$anthropic_token" ] || [ "$anthropic_token" = "null" ]; then
+        creds_file="$config_dir/.credentials.json"
+        if [ -f "$creds_file" ]; then
+            anthropic_token=$(jq -r '.claudeAiOauth.accessToken // empty' "$creds_file" 2>/dev/null)
+        fi
+    fi
+    if [ -z "$anthropic_token" ] || [ "$anthropic_token" = "null" ]; then
+        if command -v security >/dev/null 2>&1; then
+            blob=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null)
+            if [ -n "$blob" ]; then
+                anthropic_token=$(echo "$blob" | jq -r '.claudeAiOauth.accessToken // empty' 2>/dev/null)
+            fi
+        fi
+    fi
+    if [ -z "$anthropic_token" ] || [ "$anthropic_token" = "null" ]; then
+        if command -v secret-tool >/dev/null 2>&1; then
+            blob=$(timeout 2 secret-tool lookup service "Claude Code-credentials" 2>/dev/null)
+            if [ -n "$blob" ]; then
+                anthropic_token=$(echo "$blob" | jq -r '.claudeAiOauth.accessToken // empty' 2>/dev/null)
+            fi
+        fi
+    fi
+fi
+
+cache_file=""
+if [ -n "$anthropic_token" ] && [ "$anthropic_token" != "null" ] && $cache_ok; then
+    cache_file="$cache_dir/usage-cache-$profile_key-$(printf '%s' "$anthropic_token" | shasum -a 256 | cut -c1-8).json"
+fi
 cache_max_age=60
-mkdir -p /tmp/claude
 
 usage_data=""
 extra_enabled="false"
@@ -278,12 +417,21 @@ if $glm_mode; then
     # observed on CREDIT_LIMIT responses), not by reset-time ordering — near
     # the weekly reset the two orderings swap. An unrecognized response shape
     # omits the quota lines rather than guessing a mapping.
-    zai_cache="/tmp/claude/statusline-zai-cache.json"
+    zai_data=""
+    # The cache is keyed by the account token: concurrent windows may hold
+    # different Z.ai tokens, and a shared cache would render one account's
+    # quota inside the other's statusline. No token (or no usable cache
+    # dir) means no fetch and no cache — a tokenless session has no account
+    # whose quota could be shown.
+    zai_token="${ANTHROPIC_AUTH_TOKEN:-${ANTHROPIC_API_KEY:-}}"
+    zai_cache=""
     zai_cache_max_age=60
     zai_cache_max_stale=600
-    zai_data=""
+    if [ -n "$zai_token" ] && [ "$zai_token" != "null" ] && $cache_ok; then
+        zai_cache="$cache_dir/zai-cache-$(printf '%s' "$zai_token" | shasum -a 256 | cut -c1-8).json"
+    fi
 
-    if [ -f "$zai_cache" ]; then
+    if [ -n "$zai_cache" ] && [ -f "$zai_cache" ]; then
         zai_mtime=$(stat -c %Y "$zai_cache" 2>/dev/null || stat -f %m "$zai_cache" 2>/dev/null)
         zai_age=$(( $(date +%s) - zai_mtime ))
         if [ "$zai_age" -lt "$zai_cache_max_age" ]; then
@@ -291,35 +439,35 @@ if $glm_mode; then
         fi
     fi
 
-    if [ -z "$zai_data" ]; then
-        zai_token="${ANTHROPIC_AUTH_TOKEN:-${ANTHROPIC_API_KEY:-}}"
-        if [ -n "$zai_token" ] && [ "$zai_token" != "null" ]; then
-            response=$(curl -s --max-time 5 \
-                -H "Authorization: Bearer $zai_token" \
-                "https://api.z.ai/api/monitor/usage/quota/limit" 2>/dev/null)
-            # Cache only a structurally valid response — one containing at
-            # least one renderable entry (a KNOWN window with renderable
-            # fields) — so an endpoint shape change can never overwrite the
-            # last good cache. Rendering feeds usage/currentValue/nextResetTime
-            # into bash integer arithmetic, so those must be integers; and
-            # percentage must be a number or absent/null (`// ` would also
-            # rewrite false, so test it explicitly).
-            if [ -n "$response" ] && echo "$response" | jq -e '
-                def oknum: type == "number" and floor == .;
-                def rbl($u; $n): .unit == $u and .number == $n
-                    and (.usage | oknum) and (.currentValue | oknum) and (.nextResetTime | oknum)
-                    and (.percentage | (. == null or type == "number"));
-                (.data.limits | type) == "array"
-                and ([.data.limits[] | select(rbl(3; 5) or rbl(6; 1))] | length) > 0
-            ' >/dev/null 2>&1; then
-                zai_data="$response"
-                # Atomic replace, so concurrent statusline instances never
-                # read a partially written cache.
-                zai_tmp="$(mktemp "${zai_cache}.XXXXXX")" \
-                    && printf '%s' "$response" > "$zai_tmp" \
-                    && mv -f "$zai_tmp" "$zai_cache" \
-                    || rm -f "$zai_tmp"
-            fi
+    if [ -z "$zai_data" ] && [ -n "$zai_cache" ]; then
+        # Auth header via stdin (-H @-), not a command-line argument:
+        # the statusline runs constantly, and an argv token would be
+        # visible to any local `ps` for the lifetime of each curl.
+        response=$(printf 'Authorization: Bearer %s' "$zai_token" \
+            | curl -s --max-time 5 -H @- \
+            "https://api.z.ai/api/monitor/usage/quota/limit" 2>/dev/null)
+        # Cache only a structurally valid response — one containing at
+        # least one renderable entry (a KNOWN window with renderable
+        # fields) — so an endpoint shape change can never overwrite the
+        # last good cache. Rendering feeds usage/currentValue/nextResetTime
+        # into bash integer arithmetic, so those must be integers; and
+        # percentage must be a number or absent/null (`// ` would also
+        # rewrite false, so test it explicitly).
+        if [ -n "$response" ] && echo "$response" | jq -e '
+            def oknum: type == "number" and floor == .;
+            def rbl($u; $n): .unit == $u and .number == $n
+                and (.usage | oknum) and (.currentValue | oknum) and (.nextResetTime | oknum)
+                and (.percentage | (. == null or type == "number"));
+            (.data.limits | type) == "array"
+            and ([.data.limits[] | select(rbl(3; 5) or rbl(6; 1))] | length) > 0
+        ' >/dev/null 2>&1; then
+            zai_data="$response"
+            # Atomic replace, so concurrent statusline instances never
+            # read a partially written cache.
+            zai_tmp="$(mktemp "${zai_cache}.XXXXXX")" \
+                && printf '%s' "$response" > "$zai_tmp" \
+                && mv -f "$zai_tmp" "$zai_cache" \
+                || rm -f "$zai_tmp"
         fi
         # Refresh failed: fall back to the stale cache for a bounded window
         # only; past it the quota lines are omitted rather than displayed as
@@ -342,7 +490,8 @@ if $glm_mode; then
                 and (.percentage | (. == null or type == "number"));
             .data.limits | map(select(rbl(3; 5))) | .[0] // empty' 2>/dev/null)
         if [ -n "$zai_entry" ]; then
-            five_hour_pct=$(echo "$zai_entry" | jq -r '.percentage // (if .usage > 0 then (.currentValue / .usage * 100) else 0 end)' | awk '{printf "%.0f", $1}')
+            five_hour_pct_raw=$(echo "$zai_entry" | jq -r '.percentage // (if .usage > 0 then (.currentValue / .usage * 100) else 0 end)')
+            five_hour_pct=$(printf "%.0f" "$five_hour_pct_raw")
             five_hour_reset_epoch=$(( $(echo "$zai_entry" | jq -r '.nextResetTime') / 1000 ))
             five_hour_credits="$(format_credits "$(echo "$zai_entry" | jq -r '.currentValue')")/$(format_credits "$(echo "$zai_entry" | jq -r '.usage')")"
         fi
@@ -355,7 +504,8 @@ if $glm_mode; then
                 and (.percentage | (. == null or type == "number"));
             .data.limits | map(select(rbl(6; 1))) | .[0] // empty' 2>/dev/null)
         if [ -n "$zai_entry" ]; then
-            seven_day_pct=$(echo "$zai_entry" | jq -r '.percentage // (if .usage > 0 then (.currentValue / .usage * 100) else 0 end)' | awk '{printf "%.0f", $1}')
+            seven_day_pct_raw=$(echo "$zai_entry" | jq -r '.percentage // (if .usage > 0 then (.currentValue / .usage * 100) else 0 end)')
+            seven_day_pct=$(printf "%.0f" "$seven_day_pct_raw")
             seven_day_reset_epoch=$(( $(echo "$zai_entry" | jq -r '.nextResetTime') / 1000 ))
             seven_day_credits="$(format_credits "$(echo "$zai_entry" | jq -r '.currentValue')")/$(format_credits "$(echo "$zai_entry" | jq -r '.usage')")"
         fi
@@ -373,43 +523,28 @@ elif ! $has_stdin_rates; then
         fi
     fi
 
-    if $needs_refresh; then
-        token=""
-        if [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
-            token="$CLAUDE_CODE_OAUTH_TOKEN"
-        elif command -v security >/dev/null 2>&1; then
-            blob=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null)
-            if [ -n "$blob" ]; then
-                token=$(echo "$blob" | jq -r '.claudeAiOauth.accessToken // empty' 2>/dev/null)
-            fi
-        fi
-        if [ -z "$token" ] || [ "$token" = "null" ]; then
-            creds_file="${HOME}/.claude/.credentials.json"
-            if [ -f "$creds_file" ]; then
-                token=$(jq -r '.claudeAiOauth.accessToken // empty' "$creds_file" 2>/dev/null)
-            fi
-        fi
-        if [ -z "$token" ] || [ "$token" = "null" ]; then
-            if command -v secret-tool >/dev/null 2>&1; then
-                blob=$(timeout 2 secret-tool lookup service "Claude Code-credentials" 2>/dev/null)
-                if [ -n "$blob" ]; then
-                    token=$(echo "$blob" | jq -r '.claudeAiOauth.accessToken // empty' 2>/dev/null)
-                fi
-            fi
-        fi
-
-        if [ -n "$token" ] && [ "$token" != "null" ]; then
-            response=$(curl -s --max-time 5 \
-                -H "Accept: application/json" \
-                -H "Content-Type: application/json" \
-                -H "Authorization: Bearer $token" \
-                -H "anthropic-beta: oauth-2025-04-20" \
-                -H "User-Agent: claude-code/2.1.34" \
-                "https://api.anthropic.com/api/oauth/usage" 2>/dev/null)
-            if [ -n "$response" ] && echo "$response" | jq -e '.five_hour' >/dev/null 2>&1; then
-                usage_data="$response"
-                echo "$response" > "$cache_file"
-            fi
+    if $needs_refresh && [ -n "$cache_file" ]; then
+        # Auth header via stdin (-H @-), not a command-line argument:
+        # an argv token would be visible to any local `ps` for the
+        # lifetime of each curl (same rationale as the Z.ai fetch).
+        # (cache_file non-empty already implies a resolved token and a
+        # usable cache dir.)
+        response=$(printf 'Authorization: Bearer %s' "$anthropic_token" \
+            | curl -s --max-time 5 \
+            -H "Accept: application/json" \
+            -H "Content-Type: application/json" \
+            -H @- \
+            -H "anthropic-beta: oauth-2025-04-20" \
+            -H "User-Agent: claude-code/2.1.34" \
+            "https://api.anthropic.com/api/oauth/usage" 2>/dev/null)
+        if [ -n "$response" ] && echo "$response" | jq -e '.five_hour' >/dev/null 2>&1; then
+            usage_data="$response"
+            # Atomic replace — the same publication pattern as the Z.ai
+            # cache, so a concurrent reader never sees a half-written file.
+            cache_tmp="$(mktemp "${cache_file}.XXXXXX")" \
+                && printf '%s' "$response" > "$cache_tmp" \
+                && mv -f "$cache_tmp" "$cache_file" \
+                || rm -f "$cache_tmp"
         fi
         if [ -z "$usage_data" ] && [ -f "$cache_file" ]; then
             usage_data=$(cat "$cache_file" 2>/dev/null)
@@ -417,10 +552,14 @@ elif ! $has_stdin_rates; then
     fi
 
     if [ -n "$usage_data" ] && echo "$usage_data" | jq -e . >/dev/null 2>&1; then
-        five_hour_pct=$(echo "$usage_data" | jq -r '.five_hour.utilization // 0' | awk '{printf "%.0f", $1}')
+        # Raw fractions for pace projection, rounded values for display
+        # (same rationale as the stdin path).
+        five_hour_pct_raw=$(echo "$usage_data" | jq -r '.five_hour.utilization // empty')
+        five_hour_pct=$(printf "%.0f" "${five_hour_pct_raw:-0}")
         five_hour_reset_iso=$(echo "$usage_data" | jq -r '.five_hour.resets_at // empty')
         five_hour_reset_epoch=$(iso_to_epoch "$five_hour_reset_iso")
-        seven_day_pct=$(echo "$usage_data" | jq -r '.seven_day.utilization // 0' | awk '{printf "%.0f", $1}')
+        seven_day_pct_raw=$(echo "$usage_data" | jq -r '.seven_day.utilization // empty')
+        seven_day_pct=$(printf "%.0f" "${seven_day_pct_raw:-0}")
         seven_day_reset_iso=$(echo "$usage_data" | jq -r '.seven_day.resets_at // empty')
         seven_day_reset_epoch=$(iso_to_epoch "$seven_day_reset_iso")
 
@@ -445,7 +584,14 @@ if [ -n "$five_hour_pct" ]; then
     five_hour_pct_color=$(color_for_pct "$five_hour_pct")
     five_hour_pct_fmt=$(printf "%3d" "$five_hour_pct")
 
+    # Pace runs on the raw (fractional) percentage — see the stdin-path
+    # comment for why rounding first would skew the projection.
+    pace_5h=""
+    [ -n "$five_hour_pct_raw" ] \
+        && pace_5h=$(pace_pct "$five_hour_pct_raw" 18000 "$five_hour_reset_epoch" 180)
+
     rate_lines+="${white}current${reset} ${five_hour_bar} ${five_hour_pct_color}${five_hour_pct_fmt}%${reset}"
+    [ -n "$pace_5h" ] && rate_lines+=" ${dim}→${reset}$(pace_color "$pace_5h")${pace_5h}%${reset}"
     [ -n "$five_hour_credits" ] && rate_lines+=" ${dim}${five_hour_credits}${reset}"
     [ -n "$five_hour_reset" ] && rate_lines+=" ${dim}⟳${reset} ${white}${five_hour_reset}${reset}"
 fi
@@ -456,8 +602,13 @@ if [ -n "$seven_day_pct" ]; then
     seven_day_pct_color=$(color_for_pct "$seven_day_pct")
     seven_day_pct_fmt=$(printf "%3d" "$seven_day_pct")
 
+    pace_7d=""
+    [ -n "$seven_day_pct_raw" ] \
+        && pace_7d=$(pace_pct "$seven_day_pct_raw" 604800 "$seven_day_reset_epoch" 7200)
+
     [ -n "$rate_lines" ] && rate_lines+="\n"
     rate_lines+="${white}weekly${reset}  ${seven_day_bar} ${seven_day_pct_color}${seven_day_pct_fmt}%${reset}"
+    [ -n "$pace_7d" ] && rate_lines+=" ${dim}→${reset}$(pace_color "$pace_7d")${pace_7d}%${reset}"
     [ -n "$seven_day_credits" ] && rate_lines+=" ${dim}${seven_day_credits}${reset}"
     [ -n "$seven_day_reset" ] && rate_lines+=" ${dim}⟳${reset} ${white}${seven_day_reset}${reset}"
 fi
