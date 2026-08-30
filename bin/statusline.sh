@@ -152,6 +152,23 @@ pace_color() {
     fi
 }
 
+# Time until a reset epoch, as "5d22h" / "4h12m" / "42m" — same units style
+# as the session timer. Minutes resolution is enough at statusline glance
+# distance; empty for a missing or already-past epoch.
+format_remaining() {
+    local reset_epoch=$1
+    [ -z "$reset_epoch" ] || [ "$reset_epoch" = "null" ] || [ "$reset_epoch" = "0" ] && return
+    local remain=$(( reset_epoch - $(date +%s) ))
+    [ "$remain" -le 0 ] && return
+    if [ "$remain" -ge 86400 ]; then
+        printf "%dd%dh" $(( remain / 86400 )) $(( (remain % 86400) / 3600 ))
+    elif [ "$remain" -ge 3600 ]; then
+        printf "%dh%dm" $(( remain / 3600 )) $(( (remain % 3600) / 60 ))
+    else
+        printf "%dm" $(( remain / 60 ))
+    fi
+}
+
 # ── Backend detection ───────────────────────────────────
 # A session pointed at Z.ai's Anthropic-compatible endpoint (GLM Coding Plan)
 # inherits ANTHROPIC_BASE_URL from the claude process, and that URL is the only
@@ -593,7 +610,11 @@ if [ -n "$five_hour_pct" ]; then
     rate_lines+="${white}current${reset} ${five_hour_bar} ${five_hour_pct_color}${five_hour_pct_fmt}%${reset}"
     [ -n "$pace_5h" ] && rate_lines+=" ${dim}→ ${reset}$(pace_color "$pace_5h")${pace_5h}%${reset}"
     [ -n "$five_hour_credits" ] && rate_lines+=" ${dim}${five_hour_credits}${reset}"
-    [ -n "$five_hour_reset" ] && rate_lines+=" ${dim}⟳${reset} ${white}${five_hour_reset}${reset}"
+    if [ -n "$five_hour_reset" ]; then
+        rate_lines+=" ${dim}⟳${reset} ${white}${five_hour_reset}${reset}"
+        five_hour_remaining=$(format_remaining "$five_hour_reset_epoch")
+        [ -n "$five_hour_remaining" ] && rate_lines+=" ${dim}(${five_hour_remaining})${reset}"
+    fi
 fi
 
 if [ -n "$seven_day_pct" ]; then
@@ -610,7 +631,11 @@ if [ -n "$seven_day_pct" ]; then
     rate_lines+="${white}weekly${reset}  ${seven_day_bar} ${seven_day_pct_color}${seven_day_pct_fmt}%${reset}"
     [ -n "$pace_7d" ] && rate_lines+=" ${dim}→ ${reset}$(pace_color "$pace_7d")${pace_7d}%${reset}"
     [ -n "$seven_day_credits" ] && rate_lines+=" ${dim}${seven_day_credits}${reset}"
-    [ -n "$seven_day_reset" ] && rate_lines+=" ${dim}⟳${reset} ${white}${seven_day_reset}${reset}"
+    if [ -n "$seven_day_reset" ]; then
+        rate_lines+=" ${dim}⟳${reset} ${white}${seven_day_reset}${reset}"
+        seven_day_remaining=$(format_remaining "$seven_day_reset_epoch")
+        [ -n "$seven_day_remaining" ] && rate_lines+=" ${dim}(${seven_day_remaining})${reset}"
+    fi
 fi
 
 if [ "$extra_enabled" = "true" ] && [ -n "$usage_data" ]; then
