@@ -98,6 +98,20 @@ previous `statusline.sh` if you kept a backup.
 Fork of [nilbuild/claude-statusline](https://github.com/nilbuild/claude-statusline)
 by Kamran Ahmed.
 
+Several features were ported from other forks of the upstream (re-implemented
+here; design credit belongs to them):
+
+- **Pace projection** — design from [peterdrier](https://github.com/peterdrier/claude-statusline)'s
+  fork (projection math, `→NNN%` format, 999 cap, pace color thresholds)
+- **Payload badges / measured session timer** — from [noah4520](https://github.com/noah4520/claude-statusline)'s
+  fork (`fast_mode`, `thinking.enabled`, `exceeds_200k_tokens`, `cost.total_duration_ms`)
+- **Git change counts** — from [camkeith](https://github.com/camkeith/claude-statusline)'s
+  fork (per-kind counts; the `±/+/-/?` symbol set is this fork's variation)
+- **`CLAUDE_CONFIG_DIR` support** — from [mhmzdev](https://github.com/mhmzdev/claude-statusline)'s
+  fork (see their upstream PR #34)
+- **Token-via-stdin and private cache dir** — from [kay404](https://github.com/kay404/claude-statusline)'s
+  fork (see their upstream PR #30)
+
 ## License
 
 MIT
