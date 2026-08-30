@@ -591,7 +591,7 @@ if [ -n "$five_hour_pct" ]; then
         && pace_5h=$(pace_pct "$five_hour_pct_raw" 18000 "$five_hour_reset_epoch" 180)
 
     rate_lines+="${white}current${reset} ${five_hour_bar} ${five_hour_pct_color}${five_hour_pct_fmt}%${reset}"
-    [ -n "$pace_5h" ] && rate_lines+=" ${dim}→${reset}$(pace_color "$pace_5h")${pace_5h}%${reset}"
+    [ -n "$pace_5h" ] && rate_lines+=" ${dim}→ ${reset}$(pace_color "$pace_5h")${pace_5h}%${reset}"
     [ -n "$five_hour_credits" ] && rate_lines+=" ${dim}${five_hour_credits}${reset}"
     [ -n "$five_hour_reset" ] && rate_lines+=" ${dim}⟳${reset} ${white}${five_hour_reset}${reset}"
 fi
@@ -608,7 +608,7 @@ if [ -n "$seven_day_pct" ]; then
 
     [ -n "$rate_lines" ] && rate_lines+="\n"
     rate_lines+="${white}weekly${reset}  ${seven_day_bar} ${seven_day_pct_color}${seven_day_pct_fmt}%${reset}"
-    [ -n "$pace_7d" ] && rate_lines+=" ${dim}→${reset}$(pace_color "$pace_7d")${pace_7d}%${reset}"
+    [ -n "$pace_7d" ] && rate_lines+=" ${dim}→ ${reset}$(pace_color "$pace_7d")${pace_7d}%${reset}"
     [ -n "$seven_day_credits" ] && rate_lines+=" ${dim}${seven_day_credits}${reset}"
     [ -n "$seven_day_reset" ] && rate_lines+=" ${dim}⟳${reset} ${white}${seven_day_reset}${reset}"
 fi
