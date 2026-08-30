@@ -5,40 +5,71 @@ Configure your Claude Code statusline to show limits, directory and git info
 ![demo](./.github/demo.png)
 
 > **Personal fork** of [nilbuild/claude-statusline](https://github.com/nilbuild/claude-statusline),
-> based on upstream `v1.0.6` with these additions:
->
-> - **Session cost** — a `$x.xx` segment on line 1, read from `cost.total_cost_usd`.
-> - **Live session effort** — reads `effort.level` from the statusline payload, so
->   per-session `/effort` / `--effort` (including the session-only `max` level, which
->   is never written to `settings.json`) is reflected, not just the persisted default.
-> - **GLM (Z.ai) backend support** — when Claude Code runs against Z.ai's
->   Anthropic-compatible endpoint (GLM Coding Plan, detected via the
->   `ANTHROPIC_BASE_URL` host being `z.ai` or a subdomain), the `current` /
->   `weekly` quota lines are read from Z.ai's monitor API instead of
->   Anthropic's, showing credit usage and reset times. The synthetic USD cost
->   estimate and the Anthropic-only `extra` line are hidden in that mode.
->   Requires `ANTHROPIC_AUTH_TOKEN` (or `ANTHROPIC_API_KEY`) in the
->   environment, which any Z.ai-backed session already sets.
-> - **Pace projection** — a `→NNN%` marker after each rate line: where the
->   window-end usage lands if the pace so far holds. Works for both the
->   5-hour and weekly windows (reset time is the only input), including
->   Z.ai-backed windows. Suppressed while a window is too young for a
->   meaningful pace.
-> - **Payload badges** — `⚡ fast` (fast mode on), `🧠 off` (thinking disabled),
->   and a magenta `1M` badge when the model exceeds the 200k default context.
->   The session timer reads `cost.total_duration_ms` (measured wall clock,
->   survives resumes) instead of `session.start_time`.
-> - **Git change counts** — the dirty marker expands from `*` to per-kind
->   counts such as `3±,1+,2-` (modified, added, deleted; untracked shows as `?`).
-> - **`CLAUDE_CONFIG_DIR`** — settings and credentials are read from
->   `$CLAUDE_CONFIG_DIR` when set, for multi-profile setups.
-> - **Hardened fetches** — auth tokens are piped to curl via stdin (never
->   visible in `ps` as command-line arguments), and usage caches live under
->   `XDG_CACHE_HOME` (default `~/.cache/claude-statusline`) with `0700`
->   permissions instead of world-readable `/tmp`.
->
-> This fork is **not published to npm**. Install it from source (below). The upstream
-> `npx` command installs the original version *without* these changes.
+> based on upstream `v1.0.6`. Everything the statusline renders is listed below,
+> keyed to the screenshot; **fork** marks what this fork adds or changes
+> (origins in [Credits](#credits)).
+
+## What you see
+
+### Line 1 — session
+
+| In the shot | Meaning | Origin |
+|---|---|---|
+| `Opus 5 (1M context)` | Model display name | upstream |
+| `✍️ 23%` | Context window used. Green below 50%, orange from 50, yellow from 70, red from 90 | upstream |
+| `⚡` | Session runs with `--dangerously-skip-permissions`. The bare bolt sits just before the directory — not to be confused with the `⚡ fast` badge further right | upstream |
+| `claude-statusline` | Working directory | upstream |
+| `(main 3±,2+,2-,3?)` | Branch, then working-tree counts — `±` modified/renamed/copied/unmerged/typechange, `+` added, `-` deleted, `?` untracked. Kinds with nothing in them are dropped, so a clean tree shows the branch alone | **fork** |
+| `⏱ 7h56m` | Session wall clock from `cost.total_duration_ms` — measured time, so it survives resumes. Renders `Ns` under a minute and `Nm` under an hour | **fork** |
+| `$25.22` | Session cost from `cost.total_cost_usd`. Hidden on Z.ai-backed sessions, where it would only be an Anthropic-pricing estimate | **fork** |
+| `⚡ fast` *(not in this shot)* | Fast mode is on (`fast_mode`) — the labelled bolt, distinct from the skip-permissions one | **fork** |
+| `🧠 off` *(not in this shot)* | Thinking is disabled (`thinking.enabled == false`) | **fork** |
+| `1M` | Context exceeds the 200k default (`exceeds_200k_tokens`) | **fork** |
+| `● high` | Effort level — `◉ max`, `● xhigh`, `● high`, `◑ medium`, `◔ low`. Read live from `effort.level`, so `/effort` and the session-only `max` show up; falls back to the persisted default when the model reports none | **fork** |
+
+### Lines 2-4 — rate limits
+
+| In the shot | Meaning | Origin |
+|---|---|---|
+| `current` / `weekly` | The 5-hour and weekly windows | upstream |
+| `●●○○○○○○○○  22%` | Ten-cell bar and utilization, on the same color ramp as the context percentage — hence green at 22% and yellow at the weekly 80% | upstream |
+| `→  33%` / `→ 107%` | Where the window ends up if the pace so far holds. Green below 80, orange from 80, yellow from 90, red from 100 — which is why the weekly projection is red here | **fork** |
+| `⟳ 5:50pm` / `⟳ sep 1, 10:00am` | When the window resets | upstream |
+| `(1h41m)` / `(1d17h)` | Time left until that reset — `NdNh` past a day, `NhNm` past an hour, `Nm` below | **fork** |
+| `extra   ●○○○○○○○○○ $32.99/$200.00 ⟳ sep 1` | Flex-rate usage and its monthly limit, shown only while `extra_usage` is enabled on the account | upstream |
+
+On a Z.ai-backed session each bar also carries the raw credit count
+(`5.4k/12k`) between the projection and the reset time — **fork**.
+
+The projection is deliberately absent early in a window: it needs three
+minutes of the 5-hour window and two hours of the weekly one before the
+extrapolation means anything, and it is dropped entirely if the reset time
+implies an elapsed time longer than the window itself (a stale cache) rather
+than rendered from dead data.
+
+## Behavior under the hood
+
+- Rate limits come from the statusline payload when Claude Code supplies them,
+  otherwise from the Anthropic OAuth usage API, refreshed at most once a
+  minute; if a refresh fails the last cached response is reused. Upstream
+  behavior, with this fork publishing cache writes atomically so a concurrent
+  reader never sees a half-written file
+- **Z.ai (GLM) sessions** — when `ANTHROPIC_BASE_URL`'s host is `z.ai` or a
+  subdomain, both windows are read from Z.ai's monitor API using the same
+  token the session itself uses, on the same one-minute cache. Here the stale
+  fallback is capped at 10 minutes: past that the quota lines are dropped
+  rather than shown as if current. The USD cost and the Anthropic-only
+  `extra` line are hidden, and a session without a token shows no quota at
+  all rather than another account's cached numbers — **fork**
+- Credential resolution runs env token → `$CLAUDE_CONFIG_DIR/.credentials.json`
+  → macOS Keychain → secret-tool, so an explicitly selected profile is never
+  preempted by the default account's keychain entry — **fork**
+- Caches live under `XDG_CACHE_HOME` (default `~/.cache/claude-statusline`) at
+  `0700`, namespaced per profile **and** per account. Concurrent windows on
+  different profiles or tokens therefore never read each other's quota —
+  **fork**
+- Auth headers reach curl through stdin (`-H @-`) instead of argv, so a token
+  never appears in `ps` output — **fork**
 
 ## Install
 
