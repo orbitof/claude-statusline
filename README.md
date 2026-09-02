@@ -15,16 +15,16 @@ Configure your Claude Code statusline to show limits, directory and git info
 
 | In the shot | Meaning | Origin |
 |---|---|---|
-| `Opus 5 (1M context)` | Model display name | upstream |
-| `✍️ 23%` | Context window used. Green below 50%, orange from 50, yellow from 70, red from 90 | upstream |
-| `⏳ 47m` *(not in this shot)* | Prompt cache: time left before the cached prefix expires and the next turn has to rewrite it. Green, yellow under 15 minutes, red under 5. Read from `prompt_cache.expires_at`; the TTL (`5m` or `1h`) is whatever the last request used | **fork** |
+| `Fable 5.1` | Model display name | upstream |
+| `✍️ 52%` | Context window used. Green below 50%, orange from 50 — as here — yellow from 70, red from 90 | upstream |
+| `⏳ 41m` | Prompt cache: time left before the cached prefix expires and the next turn has to rewrite it. Green, yellow under 15 minutes, red under 5. Read from `prompt_cache.expires_at`; the TTL (`5m` or `1h`) is whatever the last request used | **fork** |
 | `⌛ ~85k` *(not in this shot)* | Prompt cache is cold: the next request rewrites about this many tokens (`recache_tokens_if_cold`). The number is dropped when Claude Code already expects a different prefix, e.g. right after a compaction | **fork** |
 | `⚠ 2` *(not in this shot)* | Unexpected cache misses this session (`prompt_cache.misses`) — the prefix broke mid-session, usually because the tool set, system prompt, model or effort changed. Shown after either cache state, only when non-zero | **fork** |
 | `⚡` | Session runs with `--dangerously-skip-permissions`. The bare bolt sits just before the directory — not to be confused with the `⚡ fast` badge further right | upstream |
 | `claude-statusline` | Working directory | upstream |
-| `(main 3±,2+,2-,3?)` | Branch, then working-tree counts — `±` modified/renamed/copied/unmerged/typechange, `+` added, `-` deleted, `?` untracked. Kinds with nothing in them are dropped, so a clean tree shows the branch alone | **fork** |
-| `⏱ 7h56m` | Session wall clock from `cost.total_duration_ms` — measured time, so it survives resumes. Renders `Ns` under a minute and `Nm` under an hour | **fork** |
-| `$25.22` | Session cost from `cost.total_cost_usd`. Hidden on Z.ai-backed sessions, where it would only be an Anthropic-pricing estimate | **fork** |
+| `(main)` | Branch, then working-tree counts — `±` modified/renamed/copied/unmerged/typechange, `+` added, `-` deleted, `?` untracked, e.g. `(main 3±,2+,2-,3?)`. Kinds with nothing in them are dropped, which is why this clean tree shows the branch alone | **fork** |
+| `⏱ 1h44m` | Session wall clock from `cost.total_duration_ms` — measured time, so it survives resumes. Renders `Ns` under a minute and `Nm` under an hour | **fork** |
+| `$12.75` | Session cost from `cost.total_cost_usd`. Hidden on Z.ai-backed sessions, where it would only be an Anthropic-pricing estimate | **fork** |
 | `⚡ fast` *(not in this shot)* | Fast mode is on (`fast_mode`) — the labelled bolt, distinct from the skip-permissions one | **fork** |
 | `🧠 off` *(not in this shot)* | Thinking is disabled (`thinking.enabled == false`) | **fork** |
 | `1M` | Context exceeds the 200k default (`exceeds_200k_tokens`) | **fork** |
@@ -35,11 +35,11 @@ Configure your Claude Code statusline to show limits, directory and git info
 | In the shot | Meaning | Origin |
 |---|---|---|
 | `current` / `weekly` | The 5-hour and weekly windows | upstream |
-| `●●○○○○○○○○  22%` | Ten-cell bar and utilization, on the same color ramp as the context percentage — hence green at 22% and yellow at the weekly 80% | upstream |
-| `→  33%` / `→ 107%` | Where the window ends up if the pace so far holds. Green below 80, orange from 80, yellow from 90, red from 100 — which is why the weekly projection is red here | **fork** |
-| `⟳ 5:50pm` / `⟳ sep 1, 10:00am` | When the window resets | upstream |
-| `(1h41m)` / `(1d17h)` | Time left until that reset — `NdNh` past a day, `NhNm` past an hour, `Nm` below | **fork** |
-| `extra   ●○○○○○○○○○ $32.99/$200.00 ⟳ sep 1` | Flex-rate usage and its monthly limit, shown only while `extra_usage` is enabled on the account | upstream |
+| `●○○○○○○○○○  10%` / `18%` | Ten-cell bar and utilization, on the same color ramp as the context percentage — green at these levels, yellow from 70, red from 90 | upstream |
+| `→  51%` / `→  77%` | Where the window ends up if the pace so far holds. Green below 80, orange from 80, yellow from 90, red from 100 | **fork** |
+| `⟳ 5:30am` / `⟳ sep 8, 10:00am` | When the window resets | upstream |
+| `(4h1m)` / `(5d8h)` | Time left until that reset — `NdNh` past a day, `NhNm` past an hour, `Nm` below | **fork** |
+| `extra   ○○○○○○○○○○ $0.00/$0.00 ⟳ oct 1` | Flex-rate usage and its monthly limit, shown only while `extra_usage` is enabled on the account — here enabled with nothing spent yet | upstream |
 
 On a Z.ai-backed session each bar also carries the raw credit count
 (`5.4k/12k`) between the projection and the reset time — **fork**.
