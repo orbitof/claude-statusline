@@ -2,6 +2,8 @@
 
 Configure your Claude Code statusline to show limits, directory and git info
 
+English | [日本語](./README.ja.md)
+
 ![demo](./.github/demo.png)
 
 > **Personal fork** of [nilbuild/claude-statusline](https://github.com/nilbuild/claude-statusline),
