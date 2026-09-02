@@ -290,9 +290,66 @@ if [[ "$parent_cmd" == *"--dangerously-skip-permissions"* ]]; then
     skip_perms="⚡  "
 fi
 
+# Prompt-cache state from .prompt_cache (present once the session has made a
+# request). Claude Code tracks the TTL itself: expires_at is the last cache
+# activity plus the ttl ("5m"/"1h"), in epoch seconds. While warm, show the
+# time left before the prefix has to be rewritten; once cold, show how many
+# tokens that rewrite costs (recache_tokens_if_cold — null right after a
+# compaction, when the next prompt is a different prefix anyway). Nothing is
+# shown when the session has never observed caching, since there is no
+# entry to go cold. misses counts prefix breaks that were not expected
+# (tool set / system prompt / model settings changed mid-session).
+# Note: the countdown only advances on re-render — set statusLine.refreshInterval
+# in settings.json for a live clock; Claude Code re-renders at expires_at itself.
+cache_seg=""
+cache_fields=$(echo "$input" | jq -r '
+    .prompt_cache
+    | select(. != null and .caching_observed == true)
+    | [ (.warm | tostring),
+        (.expires_at // "null" | tostring),
+        (.recache_tokens_if_cold // "null" | tostring),
+        (.misses // 0 | tostring) ]
+    | @tsv')
+if [ -n "$cache_fields" ]; then
+    IFS=$'\t' read -r cache_warm cache_expires cache_recache cache_misses <<< "$cache_fields"
+    cache_remain=0
+    if [ "$cache_warm" = "true" ] && [ "$cache_expires" != "null" ]; then
+        cache_remain=$(( cache_expires - $(date +%s) ))
+    fi
+    if [ "$cache_remain" -gt 0 ]; then
+        if [ "$cache_remain" -lt 300 ]; then cache_color=$red
+        elif [ "$cache_remain" -lt 900 ]; then cache_color=$yellow
+        else cache_color=$green
+        fi
+        if [ "$cache_remain" -ge 60 ]; then
+            cache_left=$(format_remaining "$cache_expires")
+        else
+            cache_left="${cache_remain}s"
+        fi
+        cache_seg="⏳ ${cache_color}${cache_left}${reset}"
+    else
+        # warm=false, or the snapshot's expires_at has passed since the last
+        # render — either way the next request rewrites the prefix.
+        cache_seg="⌛"
+        if [ "$cache_recache" != "null" ] && [ "$cache_recache" -gt 0 ] 2>/dev/null; then
+            if [ "$cache_recache" -ge 1000 ]; then
+                cache_seg+=" ${dim}~$(( (cache_recache + 500) / 1000 ))k${reset}"
+            else
+                cache_seg+=" ${dim}~${cache_recache}${reset}"
+            fi
+        fi
+    fi
+    if [ "$cache_misses" -gt 0 ] 2>/dev/null; then
+        cache_seg+=" ${yellow}⚠ ${cache_misses}${reset}"
+    fi
+fi
+
 line1="${blue}${model_name}${reset}"
 line1+="${sep}"
 line1+="✍️ ${pct_color}${pct_used}%${reset}"
+if [ -n "$cache_seg" ]; then
+    line1+="${sep}${cache_seg}"
+fi
 line1+="${sep}"
 line1+="${skip_perms}${cyan}${dirname}${reset}"
 if [ -n "$git_branch" ]; then

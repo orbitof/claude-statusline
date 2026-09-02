@@ -17,6 +17,9 @@ Configure your Claude Code statusline to show limits, directory and git info
 |---|---|---|
 | `Opus 5 (1M context)` | Model display name | upstream |
 | `✍️ 23%` | Context window used. Green below 50%, orange from 50, yellow from 70, red from 90 | upstream |
+| `⏳ 47m` *(not in this shot)* | Prompt cache: time left before the cached prefix expires and the next turn has to rewrite it. Green, yellow under 15 minutes, red under 5. Read from `prompt_cache.expires_at`; the TTL (`5m` or `1h`) is whatever the last request used | **fork** |
+| `⌛ ~85k` *(not in this shot)* | Prompt cache is cold: the next request rewrites about this many tokens (`recache_tokens_if_cold`). The number is dropped when Claude Code already expects a different prefix, e.g. right after a compaction | **fork** |
+| `⚠ 2` *(not in this shot)* | Unexpected cache misses this session (`prompt_cache.misses`) — the prefix broke mid-session, usually because the tool set, system prompt, model or effort changed. Shown after either cache state, only when non-zero | **fork** |
 | `⚡` | Session runs with `--dangerously-skip-permissions`. The bare bolt sits just before the directory — not to be confused with the `⚡ fast` badge further right | upstream |
 | `claude-statusline` | Working directory | upstream |
 | `(main 3±,2+,2-,3?)` | Branch, then working-tree counts — `±` modified/renamed/copied/unmerged/typechange, `+` added, `-` deleted, `?` untracked. Kinds with nothing in them are dropped, so a clean tree shows the branch alone | **fork** |
@@ -90,10 +93,16 @@ resolves either location, so the same snippet works for multi-profile setups:
 {
   "statusLine": {
     "type": "command",
-    "command": "bash \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/statusline.sh\""
+    "command": "bash \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/statusline.sh\"",
+    "refreshInterval": 60
   }
 }
 ```
+
+`refreshInterval` (seconds) makes Claude Code re-run the script on a timer.
+Without it the statusline only re-renders when the conversation changes and
+once when the prompt cache expires, so the `⏳` countdown and the reset
+timers would sit at whatever the last turn reported.
 
 To pull in later upstream changes and redeploy:
 
