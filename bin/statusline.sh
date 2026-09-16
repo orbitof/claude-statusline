@@ -437,6 +437,34 @@ else
     echo "claude-statusline: cache dir unusable: $cache_dir" >&2
 fi
 profile_key=$(printf '%s' "$config_dir" | shasum -a 256 | cut -c1-8)
+# Where Claude Code itself keeps this session's credential (read from the
+# 2.1.273 binary). CLAUDE_SECURESTORAGE_CONFIG_DIR, when present, replaces the
+# config dir as the credential store (empty value = ~/.claude) for both the
+# .credentials.json file and the Keychain service name, so the usage shown
+# always belongs to the credential the session actually uses.
+# Service name: the bare name when the selecting variable is unset or empty,
+# "-<sha256(NFC(dir))[0:8]>" otherwise. No fallback to the bare name under a
+# profile — showing the primary account's usage in a secondary-account session
+# is the one error this segment must not make.
+nfc() {
+    # The binary hashes the NFC form; only non-ASCII paths can differ from it.
+    if LC_ALL=C printf '%s' "$1" | LC_ALL=C grep -q '[^ -~]'; then
+        perl -CSA -MUnicode::Normalize -e 'print NFC($ARGV[0])' "$1"
+    else
+        printf '%s' "$1"
+    fi
+}
+if [ -n "${CLAUDE_SECURESTORAGE_CONFIG_DIR+x}" ]; then
+    creds_dir="${CLAUDE_SECURESTORAGE_CONFIG_DIR:-$HOME/.claude}"
+    keychain_dir="$CLAUDE_SECURESTORAGE_CONFIG_DIR"
+else
+    creds_dir="$config_dir"
+    keychain_dir="${CLAUDE_CONFIG_DIR:-}"
+fi
+keychain_svc="Claude Code-credentials"
+if [ -n "$keychain_dir" ]; then
+    keychain_svc="$keychain_svc-$(nfc "$keychain_dir" | shasum -a 256 | cut -c1-8)"
+fi
 
 # Resolve the Anthropic OAuth identity BEFORE cache lookup so the cache
 # file can be keyed by account. Order: explicit env token, then the
@@ -452,14 +480,14 @@ if ! $glm_mode && $cache_ok; then
         anthropic_token="$CLAUDE_CODE_OAUTH_TOKEN"
     fi
     if [ -z "$anthropic_token" ] || [ "$anthropic_token" = "null" ]; then
-        creds_file="$config_dir/.credentials.json"
+        creds_file="$creds_dir/.credentials.json"
         if [ -f "$creds_file" ]; then
             anthropic_token=$(jq -r '.claudeAiOauth.accessToken // empty' "$creds_file" 2>/dev/null)
         fi
     fi
     if [ -z "$anthropic_token" ] || [ "$anthropic_token" = "null" ]; then
         if command -v security >/dev/null 2>&1; then
-            blob=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null)
+            blob=$(security find-generic-password -s "$keychain_svc" -w 2>/dev/null)
             if [ -n "$blob" ]; then
                 anthropic_token=$(echo "$blob" | jq -r '.claudeAiOauth.accessToken // empty' 2>/dev/null)
             fi
@@ -467,7 +495,7 @@ if ! $glm_mode && $cache_ok; then
     fi
     if [ -z "$anthropic_token" ] || [ "$anthropic_token" = "null" ]; then
         if command -v secret-tool >/dev/null 2>&1; then
-            blob=$(timeout 2 secret-tool lookup service "Claude Code-credentials" 2>/dev/null)
+            blob=$(timeout 2 secret-tool lookup service "$keychain_svc" 2>/dev/null)
             if [ -n "$blob" ]; then
                 anthropic_token=$(echo "$blob" | jq -r '.claudeAiOauth.accessToken // empty' 2>/dev/null)
             fi

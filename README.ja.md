@@ -66,9 +66,13 @@ Z.ai 経由のセッションでは、各バーの予測とリセット時刻の
   最新のふりをして出すのではなく消します。USD コストと Anthropic 専用の
   `extra` 行は非表示、トークンのないセッションでは別アカウントのキャッシュを
   出すのではなく上限自体を出しません — **fork**
-- 認証情報は env のトークン → `$CLAUDE_CONFIG_DIR/.credentials.json` →
-  macOS キーチェーン → secret-tool の順に解決します。明示的に選んだプロファイル
-  が、既定アカウントのキーチェーン項目に横取りされることはありません — **fork**
+- 認証情報は env のトークン → プロファイルの認証ディレクトリの
+  `.credentials.json` → macOS キーチェーン → secret-tool の順に解決します。
+  認証ディレクトリは `$CLAUDE_CONFIG_DIR`、ただし `CLAUDE_SECURESTORAGE_CONFIG_DIR`
+  があればそちら（空なら `~/.claude`）で、キーチェーンも Claude Code が使うのと
+  同じ名前（`Claude Code-credentials-<ディレクトリのハッシュ>`）で引き、既定アカウント
+  の項目へは fallback しないので、プロファイルのセッションに別アカウントの上限が
+  出ることはありません — **fork**
 - キャッシュは `XDG_CACHE_HOME`（既定 `~/.cache/claude-statusline`）の下に
   `0700` で置き、プロファイル**と**アカウントの両方で名前空間を分けます。別の
   プロファイルやトークンで開いたウィンドウ同士が互いの上限を読むことはありま

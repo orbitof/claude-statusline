@@ -66,9 +66,13 @@ than rendered from dead data.
   rather than shown as if current. The USD cost and the Anthropic-only
   `extra` line are hidden, and a session without a token shows no quota at
   all rather than another account's cached numbers — **fork**
-- Credential resolution runs env token → `$CLAUDE_CONFIG_DIR/.credentials.json`
-  → macOS Keychain → secret-tool, so an explicitly selected profile is never
-  preempted by the default account's keychain entry — **fork**
+- Credential resolution runs env token → `.credentials.json` in the profile's
+  credential dir → macOS Keychain → secret-tool. The credential dir is
+  `$CLAUDE_CONFIG_DIR`, or `CLAUDE_SECURESTORAGE_CONFIG_DIR` when that is set
+  (empty = `~/.claude`), and the Keychain is looked up under the same name
+  Claude Code uses for it (`Claude Code-credentials-<hash of the dir>`) with no fallback to the
+  default account's entry, so a profile session never shows another account's
+  quota — **fork**
 - Caches live under `XDG_CACHE_HOME` (default `~/.cache/claude-statusline`) at
   `0700`, namespaced per profile **and** per account. Concurrent windows on
   different profiles or tokens therefore never read each other's quota —
