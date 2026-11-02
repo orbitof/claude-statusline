@@ -6,10 +6,7 @@ English | [日本語](./README.ja.md)
 
 ![demo](./.github/demo.png)
 
-> **Personal fork** of [nilbuild/claude-statusline](https://github.com/nilbuild/claude-statusline),
-> based on upstream `v1.0.6`. Everything the statusline renders is listed below,
-> keyed to the screenshot; **fork** marks what this fork adds or changes
-> (origins in [Credits](#credits)).
+> **Personal fork** of [nilbuild/claude-statusline](https://github.com/nilbuild/claude-statusline), based on upstream `v1.0.6`. Everything the statusline renders is listed below, keyed to the screenshot; **fork** marks what this fork adds or changes (origins in [Credits](#credits)).
 
 ## What you see
 
@@ -43,52 +40,22 @@ English | [日本語](./README.ja.md)
 | `(4h1m)` / `(5d8h)` | Time left until that reset — `NdNh` past a day, `NhNm` past an hour, `Nm` below | **fork** |
 | `extra   ○○○○○○○○○○ $0.00/$0.00 ⟳ oct 1` | Flex-rate usage and its monthly limit, shown only while `extra_usage` is enabled on the account — here enabled with nothing spent yet | upstream |
 
-On a Z.ai-backed session each bar also carries the raw credit count
-(`5.4k/12k`) between the projection and the reset time — **fork**.
+On a Z.ai-backed session each bar also carries the raw credit count (`5.4k/12k`) between the projection and the reset time — **fork**.
 
-The projection is deliberately absent early in a window: it needs three
-minutes of the 5-hour window and two hours of the weekly one before the
-extrapolation means anything, and it is dropped entirely if the reset time
-implies an elapsed time longer than the window itself (a stale cache) rather
-than rendered from dead data.
+The projection is deliberately absent early in a window: it needs three minutes of the 5-hour window and two hours of the weekly one before the extrapolation means anything, and it is dropped entirely if the reset time implies an elapsed time longer than the window itself (a stale cache) rather than rendered from dead data.
 
 ## Behavior under the hood
 
-- Rate limits come from the statusline payload when Claude Code supplies them,
-  otherwise from the Anthropic OAuth usage API, refreshed at most once a
-  minute; if a refresh fails the last cached response is reused. Upstream
-  behavior, with this fork publishing cache writes atomically so a concurrent
-  reader never sees a half-written file
-- The two windows are read independently, from the payload and from the API
-  alike: some plans report only the weekly one, and a window that is not
-  reported is omitted rather than shown as 0%. A failed API refresh (e.g.
-  HTTP 429) is recorded next to the cache, and every session then skips the
-  API for five minutes instead of retrying on each render — **fork**
-- **Z.ai (GLM) sessions** — when `ANTHROPIC_BASE_URL`'s host is `z.ai` or a
-  subdomain, both windows are read from Z.ai's monitor API using the same
-  token the session itself uses, on the same one-minute cache. Here the stale
-  fallback is capped at 10 minutes: past that the quota lines are dropped
-  rather than shown as if current. The USD cost and the Anthropic-only
-  `extra` line are hidden, and a session without a token shows no quota at
-  all rather than another account's cached numbers — **fork**
-- Credential resolution runs env token → `.credentials.json` in the profile's
-  credential dir → macOS Keychain → secret-tool. The credential dir is
-  `$CLAUDE_CONFIG_DIR`, or `CLAUDE_SECURESTORAGE_CONFIG_DIR` when that is set
-  (empty = `~/.claude`), and the Keychain is looked up under the same name
-  Claude Code uses for it (`Claude Code-credentials-<hash of the dir>`) with no fallback to the
-  default account's entry, so a profile session never shows another account's
-  quota — **fork**
-- Caches live under `XDG_CACHE_HOME` (default `~/.cache/claude-statusline`) at
-  `0700`, namespaced per profile **and** per account. Concurrent windows on
-  different profiles or tokens therefore never read each other's quota —
-  **fork**
-- Auth headers reach curl through stdin (`-H @-`) instead of argv, so a token
-  never appears in `ps` output — **fork**
+- Rate limits come from the statusline payload when Claude Code supplies them, otherwise from the Anthropic OAuth usage API, refreshed at most once a minute; if a refresh fails the last cached response is reused. Upstream behavior, with this fork publishing cache writes atomically so a concurrent reader never sees a half-written file
+- The two windows are read independently, from the payload and from the API alike: some plans report only the weekly one, and a window that is not reported is omitted rather than shown as 0%. A failed API refresh (e.g. HTTP 429) is recorded next to the cache, and every session then skips the API for five minutes instead of retrying on each render — **fork**
+- **Z.ai (GLM) sessions** — when `ANTHROPIC_BASE_URL`'s host is `z.ai` or a subdomain, both windows are read from Z.ai's monitor API using the same token the session itself uses, on the same one-minute cache. Here the stale fallback is capped at 10 minutes: past that the quota lines are dropped rather than shown as if current. The USD cost and the Anthropic-only `extra` line are hidden, and a session without a token shows no quota at all rather than another account's cached numbers — **fork**
+- Credential resolution runs env token → `.credentials.json` in the profile's credential dir → macOS Keychain → secret-tool. The credential dir is `$CLAUDE_CONFIG_DIR`, or `CLAUDE_SECURESTORAGE_CONFIG_DIR` when that is set (empty = `~/.claude`), and the Keychain is looked up under the same name Claude Code uses for it (`Claude Code-credentials-<hash of the dir>`) with no fallback to the default account's entry, so a profile session never shows another account's quota — **fork**
+- Caches live under `XDG_CACHE_HOME` (default `~/.cache/claude-statusline`) at `0700`, namespaced per profile **and** per account. Concurrent windows on different profiles or tokens therefore never read each other's quota — **fork**
+- Auth headers reach curl through stdin (`-H @-`) instead of argv, so a token never appears in `ps` output — **fork**
 
 ## Install
 
-Clone the repo and run the deploy script. It runs a syntax check, then copies
-`bin/statusline.sh` to `$CLAUDE_CONFIG_DIR/statusline.sh` (default `~/.claude/statusline.sh`):
+Clone the repo and run the deploy script. It runs a syntax check, then copies `bin/statusline.sh` to `$CLAUDE_CONFIG_DIR/statusline.sh` (default `~/.claude/statusline.sh`):
 
 ```bash
 git clone https://github.com/orbitof/claude-statusline.git
@@ -96,9 +63,7 @@ cd claude-statusline
 ./scripts/deploy-local.sh
 ```
 
-Then point Claude Code at the script in your settings file (`~/.claude/settings.json`,
-or `$CLAUDE_CONFIG_DIR/settings.json` for a custom profile). The command below
-resolves either location, so the same snippet works for multi-profile setups:
+Then point Claude Code at the script in your settings file (`~/.claude/settings.json`, or `$CLAUDE_CONFIG_DIR/settings.json` for a custom profile). The command below resolves either location, so the same snippet works for multi-profile setups:
 
 ```json
 {
@@ -110,10 +75,7 @@ resolves either location, so the same snippet works for multi-profile setups:
 }
 ```
 
-`refreshInterval` (seconds) makes Claude Code re-run the script on a timer.
-Without it the statusline only re-renders when the conversation changes and
-once when the prompt cache expires, so the `⏳` countdown and the reset
-timers would sit at whatever the last turn reported.
+`refreshInterval` (seconds) makes Claude Code re-run the script on a timer. Without it the statusline only re-renders when the conversation changes and once when the prompt cache expires, so the `⏳` countdown and the reset timers would sit at whatever the last turn reported.
 
 To pull in later upstream changes and redeploy:
 
@@ -123,9 +85,7 @@ git push --force-with-lease origin main
 ./scripts/deploy-local.sh
 ```
 
-> Prefer the **original** version instead? Install it via npm from
-> [nilbuild/claude-statusline](https://github.com/nilbuild/claude-statusline):
-> `npx @kamranahmedse/claude-statusline`.
+> Prefer the **original** version instead? Install it via npm from [nilbuild/claude-statusline](https://github.com/nilbuild/claude-statusline): `npx @kamranahmedse/claude-statusline`.
 
 ## Requirements
 
@@ -141,27 +101,19 @@ brew install jq
 
 ## Uninstall
 
-Remove the `statusLine` entry from `~/.claude/settings.json`, and restore your
-previous `statusline.sh` if you kept a backup.
+Remove the `statusLine` entry from `~/.claude/settings.json`, and restore your previous `statusline.sh` if you kept a backup.
 
 ## Credits
 
-Fork of [nilbuild/claude-statusline](https://github.com/nilbuild/claude-statusline)
-by Kamran Ahmed.
+Fork of [nilbuild/claude-statusline](https://github.com/nilbuild/claude-statusline) by Kamran Ahmed.
 
-Several features were ported from other forks of the upstream (re-implemented
-here; design credit belongs to them):
+Several features were ported from other forks of the upstream (re-implemented here; design credit belongs to them):
 
-- **Pace projection** — design from [peterdrier](https://github.com/peterdrier/claude-statusline)'s
-  fork (projection math, `→NNN%` format, 999 cap, pace color thresholds)
-- **Payload badges / measured session timer** — from [noah4520](https://github.com/noah4520/claude-statusline)'s
-  fork (`fast_mode`, `thinking.enabled`, `exceeds_200k_tokens`, `cost.total_duration_ms`)
-- **Git change counts** — from [camkeith](https://github.com/camkeith/claude-statusline)'s
-  fork (per-kind counts; the `±/+/-/?` symbol set is this fork's variation)
-- **`CLAUDE_CONFIG_DIR` support** — from [mhmzdev](https://github.com/mhmzdev/claude-statusline)'s
-  fork (see their upstream PR #34)
-- **Token-via-stdin and private cache dir** — from [kay404](https://github.com/kay404/claude-statusline)'s
-  fork (see their upstream PR #30)
+- **Pace projection** — design from [peterdrier](https://github.com/peterdrier/claude-statusline)'s fork (projection math, `→NNN%` format, 999 cap, pace color thresholds)
+- **Payload badges / measured session timer** — from [noah4520](https://github.com/noah4520/claude-statusline)'s fork (`fast_mode`, `thinking.enabled`, `exceeds_200k_tokens`, `cost.total_duration_ms`)
+- **Git change counts** — from [camkeith](https://github.com/camkeith/claude-statusline)'s fork (per-kind counts; the `±/+/-/?` symbol set is this fork's variation)
+- **`CLAUDE_CONFIG_DIR` support** — from [mhmzdev](https://github.com/mhmzdev/claude-statusline)'s fork (see their upstream PR #34)
+- **Token-via-stdin and private cache dir** — from [kay404](https://github.com/kay404/claude-statusline)'s fork (see their upstream PR #30)
 
 ## License
 
