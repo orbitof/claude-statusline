@@ -396,23 +396,25 @@ five_hour_credits=""
 seven_day_credits=""
 
 if ! $glm_mode; then
-    stdin_five_pct=$(echo "$input" | jq -r '.rate_limits.five_hour.used_percentage // empty')
-    if [ -n "$stdin_five_pct" ]; then
+    # The two windows are independent: some plans report only seven_day
+    # (measured 2026-11-03 on a Max 20x account, Claude Code 2.1.316).
+    # Either one present makes stdin authoritative; an absent window is
+    # omitted rather than fabricated as 0%.
+    # Keep the raw (fractional) percentage for pace projection; the
+    # rounded value is display-only. Rounding before extrapolation
+    # amplifies the error by the window ratio — a weekly 0.51% shown
+    # as 1% would project at twice the real pace early in the window.
+    five_hour_pct_raw=$(echo "$input" | jq -r '.rate_limits.five_hour.used_percentage // empty')
+    if [ -n "$five_hour_pct_raw" ]; then
         has_stdin_rates=true
-        # Keep the raw (fractional) percentage for pace projection; the
-        # rounded value is display-only. Rounding before extrapolation
-        # amplifies the error by the window ratio — a weekly 0.51% shown
-        # as 1% would project at twice the real pace early in the window.
-        five_hour_pct_raw="$stdin_five_pct"
-        five_hour_pct=$(printf "%.0f" "$stdin_five_pct")
+        five_hour_pct=$(printf "%.0f" "$five_hour_pct_raw")
         five_hour_reset_epoch=$(echo "$input" | jq -r '.rate_limits.five_hour.resets_at // empty')
-        # Absent seven_day means no weekly data — omit the line entirely
-        # rather than fabricating 0%.
-        seven_day_pct_raw=$(echo "$input" | jq -r '.rate_limits.seven_day.used_percentage // empty')
-        if [ -n "$seven_day_pct_raw" ]; then
-            seven_day_pct=$(printf "%.0f" "$seven_day_pct_raw")
-            seven_day_reset_epoch=$(echo "$input" | jq -r '.rate_limits.seven_day.resets_at // empty')
-        fi
+    fi
+    seven_day_pct_raw=$(echo "$input" | jq -r '.rate_limits.seven_day.used_percentage // empty')
+    if [ -n "$seven_day_pct_raw" ]; then
+        has_stdin_rates=true
+        seven_day_pct=$(printf "%.0f" "$seven_day_pct_raw")
+        seven_day_reset_epoch=$(echo "$input" | jq -r '.rate_limits.seven_day.resets_at // empty')
     fi
 fi
 
@@ -625,6 +627,21 @@ elif ! $has_stdin_rates; then
         fi
     fi
 
+    # A failed fetch (e.g. HTTP 429) leaves the cache stale, so without a
+    # shared marker every concurrent session retries on every render and
+    # keeps the endpoint rate-limited. Once a failure is recorded, every
+    # session skips the fetch for fail_backoff seconds (renders racing before
+    # the marker exists may still each fetch once — not a strict limiter).
+    fail_stamp="${cache_file:+$cache_file.fail}"
+    fail_backoff=300
+    if $needs_refresh && [ -n "$fail_stamp" ] && [ -f "$fail_stamp" ]; then
+        fail_mtime=$(stat -c %Y "$fail_stamp" 2>/dev/null || stat -f %m "$fail_stamp" 2>/dev/null)
+        [ $(( $(date +%s) - fail_mtime )) -lt "$fail_backoff" ] && needs_refresh=false
+    fi
+    if ! $needs_refresh && [ -z "$usage_data" ] && [ -f "$cache_file" ]; then
+        usage_data=$(cat "$cache_file" 2>/dev/null)
+    fi
+
     if $needs_refresh && [ -n "$cache_file" ]; then
         # Auth header via stdin (-H @-), not a command-line argument:
         # an argv token would be visible to any local `ps` for the
@@ -639,14 +656,18 @@ elif ! $has_stdin_rates; then
             -H "anthropic-beta: oauth-2025-04-20" \
             -H "User-Agent: claude-code/2.1.34" \
             "https://api.anthropic.com/api/oauth/usage" 2>/dev/null)
-        if [ -n "$response" ] && echo "$response" | jq -e '.five_hour' >/dev/null 2>&1; then
+        # Either window counts as a valid body; an error body has neither.
+        if [ -n "$response" ] && echo "$response" | jq -e '.five_hour or .seven_day' >/dev/null 2>&1; then
             usage_data="$response"
+            rm -f "$fail_stamp"
             # Atomic replace — the same publication pattern as the Z.ai
             # cache, so a concurrent reader never sees a half-written file.
             cache_tmp="$(mktemp "${cache_file}.XXXXXX")" \
                 && printf '%s' "$response" > "$cache_tmp" \
                 && mv -f "$cache_tmp" "$cache_file" \
                 || rm -f "$cache_tmp"
+        else
+            touch "$fail_stamp"
         fi
         if [ -z "$usage_data" ] && [ -f "$cache_file" ]; then
             usage_data=$(cat "$cache_file" 2>/dev/null)
@@ -656,14 +677,19 @@ elif ! $has_stdin_rates; then
     if [ -n "$usage_data" ] && echo "$usage_data" | jq -e . >/dev/null 2>&1; then
         # Raw fractions for pace projection, rounded values for display
         # (same rationale as the stdin path).
+        # A null window is omitted, not shown as 0% (same rule as stdin).
         five_hour_pct_raw=$(echo "$usage_data" | jq -r '.five_hour.utilization // empty')
-        five_hour_pct=$(printf "%.0f" "${five_hour_pct_raw:-0}")
-        five_hour_reset_iso=$(echo "$usage_data" | jq -r '.five_hour.resets_at // empty')
-        five_hour_reset_epoch=$(iso_to_epoch "$five_hour_reset_iso")
+        if [ -n "$five_hour_pct_raw" ]; then
+            five_hour_pct=$(printf "%.0f" "$five_hour_pct_raw")
+            five_hour_reset_iso=$(echo "$usage_data" | jq -r '.five_hour.resets_at // empty')
+            five_hour_reset_epoch=$(iso_to_epoch "$five_hour_reset_iso")
+        fi
         seven_day_pct_raw=$(echo "$usage_data" | jq -r '.seven_day.utilization // empty')
-        seven_day_pct=$(printf "%.0f" "${seven_day_pct_raw:-0}")
-        seven_day_reset_iso=$(echo "$usage_data" | jq -r '.seven_day.resets_at // empty')
-        seven_day_reset_epoch=$(iso_to_epoch "$seven_day_reset_iso")
+        if [ -n "$seven_day_pct_raw" ]; then
+            seven_day_pct=$(printf "%.0f" "$seven_day_pct_raw")
+            seven_day_reset_iso=$(echo "$usage_data" | jq -r '.seven_day.resets_at // empty')
+            seven_day_reset_epoch=$(iso_to_epoch "$seven_day_reset_iso")
+        fi
 
         extra_enabled=$(echo "$usage_data" | jq -r '.extra_usage.is_enabled // false')
     fi

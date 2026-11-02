@@ -59,6 +59,11 @@ than rendered from dead data.
   minute; if a refresh fails the last cached response is reused. Upstream
   behavior, with this fork publishing cache writes atomically so a concurrent
   reader never sees a half-written file
+- The two windows are read independently, from the payload and from the API
+  alike: some plans report only the weekly one, and a window that is not
+  reported is omitted rather than shown as 0%. A failed API refresh (e.g.
+  HTTP 429) is recorded next to the cache, and every session then skips the
+  API for five minutes instead of retrying on each render — **fork**
 - **Z.ai (GLM) sessions** — when `ANTHROPIC_BASE_URL`'s host is `z.ai` or a
   subdomain, both windows are read from Z.ai's monitor API using the same
   token the session itself uses, on the same one-minute cache. Here the stale
